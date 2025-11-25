@@ -9,7 +9,7 @@ import hashlib
 from datetime import datetime, date, timedelta
 
 # ==========================================================
-# 0. CONFIG LICENÇA / TRIAL
+# 0. CONFIG LICENÇA / TRIAL (POR EMPRESA)
 # ==========================================================
 
 LIC_SECRET = "HOMOLOGIX_SSW_DEMOSTRATIVO_2024"
@@ -24,7 +24,7 @@ LIC_FILE = "licenca_custos.json"
 def gerar_chave_licenca(nome_empresa: str, data_validade: str) -> str:
     """
     Gera uma chave de licença a partir do nome da empresa e data de validade (YYYYMMDD).
-    Use essa função em um script separado para gerar chaves trial ou definitivas.
+    Use essa função em um script separado (gerar_licenca.py) para gerar chaves trial ou definitivas.
     """
     base = f"{nome_empresa.strip().upper()}|{data_validade}|{LIC_SECRET}"
     digest = hashlib.sha256(base.encode("utf-8")).hexdigest().upper()
@@ -63,50 +63,72 @@ def validar_chave_licenca(nome_empresa: str, chave: str):
     return True, f"Licença válida até {dt_validade.strftime('%d/%m/%Y')}."
 
 
-def carregar_licenca():
+def carregar_licencas_all():
+    """
+    Carrega TODAS as empresas do arquivo licenca_custos.json.
+    Estrutura esperada:
+    {
+        "EMPRESA A": {
+            "mode": "trial" ou "licensed",
+            "trial_start": "YYYYMMDD",
+            "valid_until": "YYYYMMDD",
+            "empresa_display": "Nome digitado"
+        },
+        ...
+    }
+    """
     if not os.path.exists(LIC_FILE):
-        return None
+        return {}
     try:
         with open(LIC_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+        return data
     except Exception:
-        return None
+        return {}
 
 
-def salvar_licenca(info: dict):
+def salvar_licencas_all(data: dict):
     try:
         with open(LIC_FILE, "w", encoding="utf-8") as f:
-            json.dump(info, f)
+            json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
 
 
-def estado_licenca():
+def estado_licenca_empresa(nome_empresa_exibicao: str):
     """
-    Retorna:
-      is_licensed, trial_active, trial_days_left, lic_msg, empresa_nome
-    Regra:
-      - Primeira execução: cria trial de 7 dias automática.
-      - Se trial ativo: full (todas abas).
-      - Se trial expirou e sem licença: modo demo (sem Clientes/Rotas).
+    Controle de trial/licença POR EMPRESA.
+
+    Entrada:
+      nome_empresa_exibicao -> texto digitado pelo usuário (qualquer caixa)
+    Saída:
+      is_licensed, trial_active, trial_days_left, lic_msg
     """
     hoje = date.today()
-    info = carregar_licenca()
+    if not nome_empresa_exibicao.strip():
+        return False, False, 0, "Informe o nome da empresa."
 
-    # PRIMEIRA VEZ -> criar trial automática de 7 dias
+    key = nome_empresa_exibicao.strip().upper()
+
+    lic_all = carregar_licencas_all()
+    info = lic_all.get(key)
+
+    # PRIMESEIRA VEZ DESSA EMPRESA -> trial de 7 dias
     if info is None:
         trial_start = hoje
         info = {
             "mode": "trial",
             "trial_start": trial_start.strftime("%Y%m%d"),
-            "empresa": "",
+            "empresa_display": nome_empresa_exibicao.strip(),
         }
-        salvar_licenca(info)
+        lic_all[key] = info
+        salvar_licencas_all(lic_all)
 
     modo = info.get("mode", "trial")
-    empresa = info.get("empresa", "")
 
-    # LICENCIADO
+    # Se estiver licenciada
     if modo == "licensed":
         data_str = info.get("valid_until", "20991231")
         try:
@@ -114,13 +136,19 @@ def estado_licenca():
         except Exception:
             dt_validade = hoje
         if hoje <= dt_validade:
-            msg = f"Versão licenciada para **{empresa}** (válida até {dt_validade.strftime('%d/%m/%Y')})."
-            return True, False, 0, msg, empresa
-        # licença venceu -> volta para demo
-        msg = "Sua licença venceu. Ative uma nova chave para liberar todos os recursos."
-        return False, False, 0, msg, empresa
+            msg = (
+                f"Versão licenciada para **{info.get('empresa_display', nome_empresa_exibicao)}** "
+                f"(válida até {dt_validade.strftime('%d/%m/%Y')})."
+            )
+            return True, False, 0, msg
+        else:
+            msg = (
+                f"A licença da empresa **{info.get('empresa_display', nome_empresa_exibicao)}** venceu em "
+                f"{dt_validade.strftime('%d/%m/%Y')}. Ative uma nova chave para liberar todos os recursos."
+            )
+            return False, False, 0, msg
 
-    # TRIAL
+    # Trial
     trial_start_str = info.get("trial_start", hoje.strftime("%Y%m%d"))
     try:
         trial_start = datetime.strptime(trial_start_str, "%Y%m%d").date()
@@ -131,15 +159,18 @@ def estado_licenca():
     dias_restantes = max(0, 7 - dias_passados)
 
     if dias_passados < 7:
-        msg = f"Versão em avaliação: **{7 - dias_passados} dia(s)** restantes com todos os recursos liberados."
-        return False, True, dias_restantes, msg, empresa
+        msg = (
+            f"Versão em avaliação para **{info.get('empresa_display', nome_empresa_exibicao)}**: "
+            f"**{dias_restantes} dia(s)** restantes com todos os recursos liberados."
+        )
+        return False, True, dias_restantes, msg
     else:
         msg = (
-            "Período de avaliação encerrado. "
+            f"O período de avaliação para **{info.get('empresa_display', nome_empresa_exibicao)}** foi encerrado.\n\n"
             "Você ainda pode usar **Diário por Placa** e **Gráficos**.\n\n"
             "Para liberar **Custo por Cliente** e **Custo por Rota (SET)**, ative sua licença."
         )
-        return False, False, 0, msg, empresa
+        return False, False, 0, msg
 
 
 # ==========================================================
@@ -388,7 +419,7 @@ def parse_demonstrativo_files(uploaded_files):
             cliente_raw = remetente_raw if tipo_atual == 'C' else recebedor_raw
             cliente_nome = clean_cliente_nome(cliente_raw)
 
-            # IGNORA linhas do próprio demonstrativo
+            # Ignora linhas do próprio demonstrativo
             cliente_up = cliente_nome.strip().upper()
             if cliente_up.startswith("DEMONSTRATIVO DE FRETES") or cliente_up.startswith("DEMONSTRATIVO DE FRETE"):
                 continue
@@ -407,9 +438,8 @@ def parse_demonstrativo_files(uploaded_files):
 
     df_ctrc = pd.DataFrame(all_ctrc_rows)
     if df_ctrc.empty:
-        return pd.DataFrame(), df_ctrc
+        return pd.DataFrame(), pd.DataFrame()
 
-    # DEDUP entre múltiplos arquivos
     df_ctrc.drop_duplicates(subset=['PLACA', 'DATA', 'CTRC'], inplace=True)
     df_ctrc['DATA'] = pd.to_datetime(df_ctrc['DATA'])
 
@@ -474,15 +504,25 @@ def gerar_excel(df_diario, df_ctrc, df_cli=None, df_set=None, df_cli_ent=None, d
 
 
 # ==========================================================
-# 5. INTERFACE
+# 5. INTERFACE STREAMLIT
 # ==========================================================
 
 st.set_page_config(page_title="SSW Custos de Coleta / Entrega", page_icon="🚛", layout="wide")
 
-# estado de licença / trial
-is_licensed, trial_active, trial_days_left, lic_msg, empresa_nome = estado_licenca()
-
 st.title("SSW Custos de Coleta / Entrega")
+
+# Nome da empresa OBRIGATÓRIO (controle de trial/licença por empresa)
+empresa_input = st.text_input(
+    "Nome da empresa / filial (obrigatório para controle de licença)",
+    value=""
+).strip()
+
+if not empresa_input:
+    st.warning("Informe o nome da empresa/transportadora para continuar.")
+    st.stop()
+
+# Estado da licença para ESTA empresa
+is_licensed, trial_active, trial_days_left, lic_msg = estado_licenca_empresa(empresa_input)
 
 if is_licensed:
     st.success(lic_msg)
@@ -491,15 +531,16 @@ elif trial_active:
 else:
     st.warning(lic_msg)
 
-# bloco de ativação (quando NÃO licenciado)
+# Bloco de ativação (quando NÃO licenciado)
 if not is_licensed:
-    with st.expander("🔑 Ativar licença completa"):
+    with st.expander("🔑 Ativar licença completa para esta empresa"):
         st.markdown(
             f"""
-Para liberar **Custo por Cliente** e **Custo por Rota (SET)**:
+Para liberar **Custo por Cliente** e **Custo por Rota (SET)** para a empresa  
+**{empresa_input}**:
 
-1. Envie o **nome da empresa/filial** para gerar sua chave.  
-2. Realize o pagamento via **PIX** e envie o comprovante.  
+1. Envie o **nome da empresa/filial** para gerar sua chave;  
+2. Realize o pagamento via **PIX** e envie o comprovante;  
 3. Você receberá a chave de ativação e poderá colar abaixo.
 
 **Contato para ativação**
@@ -510,7 +551,10 @@ Para liberar **Custo por Cliente** e **Custo por Rota (SET)**:
 """
         )
         with st.form("form_licenca"):
-            nome_emp_form = st.text_input("Nome da empresa / transportadora", value=empresa_nome)
+            nome_emp_form = st.text_input(
+                "Nome da empresa / transportadora (deve ser igual ao usado para gerar a chave)",
+                value=empresa_input
+            )
             chave_form = st.text_input("Chave de ativação", type="password")
             btn_ativar = st.form_submit_button("Validar chave e ativar licença")
 
@@ -518,12 +562,14 @@ Para liberar **Custo por Cliente** e **Custo por Rota (SET)**:
                 ok, msg = validar_chave_licenca(nome_emp_form, chave_form)
                 if ok:
                     st.success(msg)
-                    novo_info = {
+                    lic_all = carregar_licencas_all()
+                    key = nome_emp_form.strip().upper()
+                    lic_all[key] = {
                         "mode": "licensed",
-                        "empresa": nome_emp_form.strip(),
                         "valid_until": chave_form.split("-")[-1],
+                        "empresa_display": nome_emp_form.strip(),
                     }
-                    salvar_licenca(novo_info)
+                    salvar_licencas_all(lic_all)
                     st.experimental_rerun()
                 else:
                     st.error(msg)
@@ -535,7 +581,7 @@ uploaded_files = st.file_uploader(
 
 if not uploaded_files:
     st.info("⬆️ Arraste o(s) arquivo(s) de Demonstrativo aqui.")
-    st.info("⬆️ Gere o arquivo na opção 076 em formato R (relatório).")
+    st.info("Gere o arquivo na opção 076 em formato R (relatório).")
     st.stop()
 
 with st.spinner("Processando Demonstrativos..."):
@@ -711,6 +757,7 @@ with tabs[1]:
 
 # TABS 3 e 4 só se liberado -------------------------------
 df_cli = df_set = df_cli_ent = df_cli_col = None
+df_tmp = None
 
 if tem_clientes_rotas:
     # TAB 3 - Clientes
@@ -799,6 +846,18 @@ if tem_clientes_rotas:
 
     # TAB 4 - Rotas (SET)
     with tabs[3]:
+        if df_tmp is None:
+            df_tmp = df_ctrc_f.copy()
+            df_tmp['DATA'] = pd.to_datetime(df_tmp['DATA'])
+            df_tmp['FRETE_DIA'] = df_tmp.groupby(['PLACA', 'DATA'])['VLR_FRETE'].transform('sum')
+            df_custo = df_diario_f[['PLACA', 'DATA', 'CUSTO_DIA']].copy()
+            df_tmp = df_tmp.merge(df_custo, on=['PLACA', 'DATA'], how='left')
+            df_tmp['CUSTO_RATEADO'] = np.where(
+                df_tmp['FRETE_DIA'] > 0,
+                df_tmp['CUSTO_DIA'] * (df_tmp['VLR_FRETE'] / df_tmp['FRETE_DIA']),
+                0.0
+            )
+
         df_set = df_tmp.groupby('SET', as_index=False).agg(
             FRETE=('VLR_FRETE', 'sum'),
             CUSTO=('CUSTO_RATEADO', 'sum'),
@@ -820,9 +879,6 @@ if tem_clientes_rotas:
             use_container_width=True,
             height=450
         )
-else:
-    df_tmp = None  # para Excel não tentar usar
-
 
 # ----------------------------------------------------------
 # DOWNLOAD EXCEL

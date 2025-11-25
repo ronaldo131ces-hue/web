@@ -16,7 +16,7 @@ LIC_SECRET = "HOMOLOGIX_SSW_DEMOSTRATIVO_2024"
 
 WHATSAPP_CONTATO = "(47) 99703-7512"          # <<< ALTERE AQUI
 EMAIL_CONTATO    = "ronaldo131ces@gmail.com"  # <<< ALTERE AQUI
-PIX_CHAVE        = "00020126580014br.gov.bcb.pix0136f0060f21-b941-469f-b6bc-61b7e83380285204000053039865802BR5914Ronaldo Cescon6009Sao Paulo62290525REC6925BEE3021F428700219563049BED"           # <<< ALTERE AQUI
+PIX_CHAVE        = "00020126580014br.gov.bcb.pix0136f0060f21-b941-469f-b6bc-61b7e83380285204000053039865802BR5914Ronaldo Cescon6009Sao Paulo62290525REC6925BEE3021F428700219563049BED"  # <<< ALTERE AQUI
 
 LIC_FILE = "licenca_custos.json"
 
@@ -172,6 +172,35 @@ def clean_cliente_nome(raw):
     if m:
         return m.group(1).strip()
     return txt
+
+
+# ======= FORMATAÇÃO BR (pt-BR) ============================
+
+def format_number_br(value, decimals=2, prefix=""):
+    """Formata número no padrão brasileiro: 172.500,00"""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return ""
+    try:
+        if decimals == 0:
+            s = f"{int(round(value)):,}"
+        else:
+            s = f"{float(value):,.{decimals}f}"
+        s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"{prefix}{s}"
+    except Exception:
+        return str(value)
+
+
+def format_percent_br(value, decimals=1):
+    """Formata percentual no padrão brasileiro: 52,3%"""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return ""
+    try:
+        s = f"{float(value) * 100:.{decimals}f}"
+        s = s.replace(".", ",")
+        return f"{s}%"
+    except Exception:
+        return ""
 
 
 # ==========================================================
@@ -558,16 +587,16 @@ custo_evt_global = (tot_custo / eventos_tot) if eventos_tot > 0 else 0.0
 custo_entrega_global = (tot_custo / entregas_tot) if entregas_tot > 0 else 0.0
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Faturamento (Frete)", f"R$ {tot_frete:,.2f}")
-c2.metric("Custo Total", f"R$ {tot_custo:,.2f}")
-c3.metric("Percentual de Custo", f"{pct_custo_global:.1%}")
-c4.metric("Custo / KG", f"R$ {custo_kg_global:,.2f}")
+c1.metric("Faturamento (Frete)", format_number_br(tot_frete, 2, "R$ "))
+c2.metric("Custo Total", format_number_br(tot_custo, 2, "R$ "))
+c3.metric("Percentual de Custo", format_percent_br(pct_custo_global, 1))
+c4.metric("Custo / KG", format_number_br(custo_kg_global, 2, "R$ "))
 
 c5, c6, c7, c8 = st.columns(4)
-c5.metric("Peso Total (KG)", f"{peso_tot:,.0f}")
-c6.metric("Eventos (Coleta+Entrega)", f"{eventos_tot:,}")
-c7.metric("Custo / Evento", f"R$ {custo_evt_global:,.2f}")
-c8.metric("Custo / Entrega", f"R$ {custo_entrega_global:,.2f}")
+c5.metric("Peso Total (KG)", format_number_br(peso_tot, 0))
+c6.metric("Eventos (Coleta+Entrega)", format_number_br(eventos_tot, 0))
+c7.metric("Custo / Evento", format_number_br(custo_evt_global, 2, "R$ "))
+c8.metric("Custo / Entrega", format_number_br(custo_entrega_global, 2, "R$ "))
 
 st.markdown("---")
 
@@ -608,17 +637,17 @@ with tabs[0]:
         df_dia_view[cols_existentes]
         .style
         .format({
-            'EVENTOS': '{:,.0f}',
-            'COLETAS': '{:,.0f}',
-            'ENTREGAS': '{:,.0f}',
-            'CLIENTES': '{:,.0f}',
-            'PESO_TOTAL': '{:,.0f}',
-            'FRETE_DIA': 'R$ {:,.2f}',
-            'CUSTO_DIA': 'R$ {:,.2f}',
-            'CUSTO_POR_KG': 'R$ {:,.2f}',
-            'CUSTO_POR_EVENTO': 'R$ {:,.2f}',
-            'CUSTO_POR_ENTREGA': 'R$ {:,.2f}',
-            'PCT_CUSTO': '{:.1%}'
+            'EVENTOS': lambda v: format_number_br(v, 0),
+            'COLETAS': lambda v: format_number_br(v, 0),
+            'ENTREGAS': lambda v: format_number_br(v, 0),
+            'CLIENTES': lambda v: format_number_br(v, 0),
+            'PESO_TOTAL': lambda v: format_number_br(v, 0),
+            'FRETE_DIA': lambda v: format_number_br(v, 2, "R$ "),
+            'CUSTO_DIA': lambda v: format_number_br(v, 2, "R$ "),
+            'CUSTO_POR_KG': lambda v: format_number_br(v, 2, "R$ "),
+            'CUSTO_POR_EVENTO': lambda v: format_number_br(v, 2, "R$ "),
+            'CUSTO_POR_ENTREGA': lambda v: format_number_br(v, 2, "R$ "),
+            'PCT_CUSTO': lambda v: format_percent_br(v, 1),
         })
         .apply(highlight_high_cost, axis=1)
     )
@@ -711,12 +740,12 @@ if tem_clientes_rotas:
         st.subheader("Visão Geral por Cliente")
         st.dataframe(
             df_cli.sort_values('FRETE', ascending=False).style.format({
-                'FRETE': 'R$ {:,.2f}',
-                'CUSTO': 'R$ {:,.2f}',
-                'PCT_CUSTO': '{:.1%}',
-                'EVENTOS': '{:,.0f}',
-                'PESO': '{:,.0f}',
-                'CUSTO_KG': 'R$ {:,.2f}'
+                'FRETE': lambda v: format_number_br(v, 2, "R$ "),
+                'CUSTO': lambda v: format_number_br(v, 2, "R$ "),
+                'PCT_CUSTO': lambda v: format_percent_br(v, 1),
+                'EVENTOS': lambda v: format_number_br(v, 0),
+                'PESO': lambda v: format_number_br(v, 0),
+                'CUSTO_KG': lambda v: format_number_br(v, 2, "R$ "),
             }),
             use_container_width=True,
             height=350
@@ -736,10 +765,10 @@ if tem_clientes_rotas:
         st.subheader("Percentual de Custo por Cliente – ENTREGAS")
         st.dataframe(
             df_cli_ent.sort_values('PCT_CUSTO_ENT', ascending=False).style.format({
-                'FRETE_ENT': 'R$ {:,.2f}',
-                'CUSTO_ENT': 'R$ {:,.2f}',
-                'EVENTOS_ENT': '{:,.0f}',
-                'PCT_CUSTO_ENT': '{:.1%}'
+                'FRETE_ENT': lambda v: format_number_br(v, 2, "R$ "),
+                'CUSTO_ENT': lambda v: format_number_br(v, 2, "R$ "),
+                'EVENTOS_ENT': lambda v: format_number_br(v, 0),
+                'PCT_CUSTO_ENT': lambda v: format_percent_br(v, 1),
             }),
             use_container_width=True,
             height=350
@@ -759,10 +788,10 @@ if tem_clientes_rotas:
         st.subheader("Percentual de Custo por Cliente – COLETAS")
         st.dataframe(
             df_cli_col.sort_values('PCT_CUSTO_COL', ascending=False).style.format({
-                'FRETE_COL': 'R$ {:,.2f}',
-                'CUSTO_COL': 'R$ {:,.2f}',
-                'EVENTOS_COL': '{:,.0f}',
-                'PCT_CUSTO_COL': '{:.1%}'
+                'FRETE_COL': lambda v: format_number_br(v, 2, "R$ "),
+                'CUSTO_COL': lambda v: format_number_br(v, 2, "R$ "),
+                'EVENTOS_COL': lambda v: format_number_br(v, 0),
+                'PCT_CUSTO_COL': lambda v: format_percent_br(v, 1),
             }),
             use_container_width=True,
             height=350
@@ -781,12 +810,12 @@ if tem_clientes_rotas:
 
         st.dataframe(
             df_set.sort_values('FRETE', ascending=False).style.format({
-                'FRETE': 'R$ {:,.2f}',
-                'CUSTO': 'R$ {:,.2f}',
-                'PCT_CUSTO': '{:.1%}',
-                'EVENTOS': '{:,.0f}',
-                'PESO': '{:,.0f}',
-                'CUSTO_KG': 'R$ {:,.2f}'
+                'FRETE': lambda v: format_number_br(v, 2, "R$ "),
+                'CUSTO': lambda v: format_number_br(v, 2, "R$ "),
+                'PCT_CUSTO': lambda v: format_percent_br(v, 1),
+                'EVENTOS': lambda v: format_number_br(v, 0),
+                'PESO': lambda v: format_number_br(v, 0),
+                'CUSTO_KG': lambda v: format_number_br(v, 2, "R$ "),
             }),
             use_container_width=True,
             height=450

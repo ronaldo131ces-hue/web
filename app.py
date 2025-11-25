@@ -9,7 +9,7 @@ import hashlib
 from datetime import datetime, date, timedelta
 
 # ==========================================================
-# 0. CONFIG LICENÇA / TRIAL (POR EMPRESA)
+# 0. CONFIG LICENÇA (POR EMPRESA, SEM TRIAL AUTOMÁTICO)
 # ==========================================================
 
 LIC_SECRET = "HOMOLOGIX_SSW_DEMOSTRATIVO_2024"
@@ -66,11 +66,10 @@ def validar_chave_licenca(nome_empresa: str, chave: str):
 def carregar_licencas_all():
     """
     Carrega TODAS as empresas do arquivo licenca_custos.json.
-    Estrutura esperada:
+    Estrutura:
     {
         "EMPRESA A": {
-            "mode": "trial" ou "licensed",
-            "trial_start": "YYYYMMDD",
+            "mode": "demo" ou "licensed",
             "valid_until": "YYYYMMDD",
             "empresa_display": "Nome digitado"
         },
@@ -99,12 +98,10 @@ def salvar_licencas_all(data: dict):
 
 def estado_licenca_empresa(nome_empresa_exibicao: str):
     """
-    Controle de trial/licença POR EMPRESA.
+    Controle de licença POR EMPRESA.
 
-    Entrada:
-      nome_empresa_exibicao -> texto digitado pelo usuário (qualquer caixa)
-    Saída:
-      is_licensed, trial_active, trial_days_left, lic_msg
+    - Empresa nova -> entra como DEMO (sem cliente/rota).
+    - Só vira 'licensed' quando receber chave válida.
     """
     hoje = date.today()
     if not nome_empresa_exibicao.strip():
@@ -115,20 +112,18 @@ def estado_licenca_empresa(nome_empresa_exibicao: str):
     lic_all = carregar_licencas_all()
     info = lic_all.get(key)
 
-    # PRIMESEIRA VEZ DESSA EMPRESA -> trial de 7 dias
+    # PRIMEIRA VEZ DESSA EMPRESA -> DEMO
     if info is None:
-        trial_start = hoje
         info = {
-            "mode": "trial",
-            "trial_start": trial_start.strftime("%Y%m%d"),
+            "mode": "demo",
             "empresa_display": nome_empresa_exibicao.strip(),
         }
         lic_all[key] = info
         salvar_licencas_all(lic_all)
 
-    modo = info.get("mode", "trial")
+    modo = info.get("mode", "demo")
 
-    # Se estiver licenciada
+    # LICENCIADA
     if modo == "licensed":
         data_str = info.get("valid_until", "20991231")
         try:
@@ -142,35 +137,23 @@ def estado_licenca_empresa(nome_empresa_exibicao: str):
             )
             return True, False, 0, msg
         else:
+            # Licença venceu -> volta para DEMO
+            info["mode"] = "demo"
+            lic_all[key] = info
+            salvar_licencas_all(lic_all)
             msg = (
                 f"A licença da empresa **{info.get('empresa_display', nome_empresa_exibicao)}** venceu em "
                 f"{dt_validade.strftime('%d/%m/%Y')}. Ative uma nova chave para liberar todos os recursos."
             )
             return False, False, 0, msg
 
-    # Trial
-    trial_start_str = info.get("trial_start", hoje.strftime("%Y%m%d"))
-    try:
-        trial_start = datetime.strptime(trial_start_str, "%Y%m%d").date()
-    except Exception:
-        trial_start = hoje
-
-    dias_passados = (hoje - trial_start).days
-    dias_restantes = max(0, 7 - dias_passados)
-
-    if dias_passados < 7:
-        msg = (
-            f"Versão em avaliação para **{info.get('empresa_display', nome_empresa_exibicao)}**: "
-            f"**{dias_restantes} dia(s)** restantes com todos os recursos liberados."
-        )
-        return False, True, dias_restantes, msg
-    else:
-        msg = (
-            f"O período de avaliação para **{info.get('empresa_display', nome_empresa_exibicao)}** foi encerrado.\n\n"
-            "Você ainda pode usar **Diário por Placa** e **Gráficos**.\n\n"
-            "Para liberar **Custo por Cliente** e **Custo por Rota (SET)**, ative sua licença."
-        )
-        return False, False, 0, msg
+    # DEMO
+    msg = (
+        f"Modo demonstração para **{info.get('empresa_display', nome_empresa_exibicao)}**.\n\n"
+        "Você pode usar **Diário por Placa** e **Gráficos** normalmente.\n\n"
+        "Para liberar **Custo por Cliente** e **Custo por Rota (SET)**, ative a licença."
+    )
+    return False, False, 0, msg
 
 
 # ==========================================================
@@ -511,7 +494,7 @@ st.set_page_config(page_title="SSW Custos de Coleta / Entrega", page_icon="🚛"
 
 st.title("SSW Custos de Coleta / Entrega")
 
-# Nome da empresa OBRIGATÓRIO (controle de trial/licença por empresa)
+# Nome da empresa OBRIGATÓRIO (controle de licença por empresa)
 empresa_input = st.text_input(
     "Nome da empresa / filial (obrigatório para controle de licença)",
     value=""
@@ -526,10 +509,8 @@ is_licensed, trial_active, trial_days_left, lic_msg = estado_licenca_empresa(emp
 
 if is_licensed:
     st.success(lic_msg)
-elif trial_active:
-    st.info(lic_msg)
 else:
-    st.warning(lic_msg)
+    st.info(lic_msg)
 
 # Bloco de ativação (quando NÃO licenciado)
 if not is_licensed:
@@ -647,11 +628,11 @@ c8.metric("Custo / Entrega", format_number_br(custo_entrega_global, 2, "R$ "))
 st.markdown("---")
 
 # ----------------------------------------------------------
-# TABS (Clientes/Rotas só se trial ou licença)
+# TABS (Clientes/Rotas só se LICENCIADO)
 # ----------------------------------------------------------
 
 tab_labels = ["📘 Diário por Placa", "📊 Gráficos"]
-tem_clientes_rotas = trial_active or is_licensed
+tem_clientes_rotas = is_licensed   # << só com licença agora
 
 if tem_clientes_rotas:
     tab_labels += ["💼 Clientes (Custo / Cliente)", "🧭 Rotas (Custo / SET)"]
@@ -755,7 +736,7 @@ with tabs[1]:
     fig3.update_layout(title="Percentual de Custo por Dia", yaxis_tickformat='.0%')
     st.plotly_chart(fig3, use_container_width=True)
 
-# TABS 3 e 4 só se liberado -------------------------------
+# TABS 3 e 4 só se LICENCIADO -----------------------------
 df_cli = df_set = df_cli_ent = df_cli_col = None
 df_tmp = None
 
@@ -884,19 +865,30 @@ if tem_clientes_rotas:
 # DOWNLOAD EXCEL
 # ----------------------------------------------------------
 
-excel_bytes = gerar_excel(
-    df_diario_f,
-    df_ctrc_f,
-    df_cli=df_cli,
-    df_set=df_set,
-    df_cli_ent=df_cli_ent,
-    df_cli_col=df_cli_col
-)
-
-nome_arq = "Analise_SSW_Demonstrativo_demo.xlsx" if not is_licensed and not trial_active else "Analise_SSW_Demonstrativo.xlsx"
+# No DEMO: só Diário + CTRCs
+if is_licensed:
+    excel_bytes = gerar_excel(
+        df_diario_f,
+        df_ctrc_f,
+        df_cli=df_cli,
+        df_set=df_set,
+        df_cli_ent=df_cli_ent,
+        df_cli_col=df_cli_col
+    )
+    nome_arq = "Analise_SSW_Demonstrativo.xlsx"
+else:
+    excel_bytes = gerar_excel(
+        df_diario_f,
+        df_ctrc_f,
+        df_cli=None,
+        df_set=None,
+        df_cli_ent=None,
+        df_cli_col=None
+    )
+    nome_arq = "Analise_SSW_Demonstrativo_demo.xlsx"
 
 st.download_button(
-    "📥 Baixar Excel Completo",
+    "📥 Baixar Excel",
     data=excel_bytes,
     file_name=nome_arq,
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

@@ -6,8 +6,9 @@ import io
 import os
 import json
 import hashlib
-from datetime import datetime, date, timedelta
-import pdfplumber  # <<< NOVO: para ler PDFs de texto
+from datetime import datetime, date
+# pdfplumber será importado dentro da função para evitar quebra se faltar pacote
+
 
 # ==========================================================
 # 0. CONFIG LICENÇA (POR EMPRESA, SEM TRIAL AUTOMÁTICO)
@@ -28,7 +29,7 @@ LIC_FILE = "licenca_custos.json"
 def gerar_chave_licenca(nome_empresa: str, data_validade: str) -> str:
     """
     Gera uma chave de licença a partir do nome da empresa e data de validade (YYYYMMDD).
-    Use essa função em um script separado para gerar chaves trial ou definitivas.
+    Use essa função em um script separado para gerar chaves.
     """
     base = f"{nome_empresa.strip().upper()}|{data_validade}|{LIC_SECRET}"
     digest = hashlib.sha256(base.encode("utf-8")).hexdigest().upper()
@@ -229,33 +230,42 @@ def format_percent_br(value, decimals=1):
         return ""
 
 
-# ---------- NOVO: leitura genérica de arquivo (TXT / SSWWEB / PDF) ----------
+# ---------- LEITURA GENÉRICA DE ARQUIVO (TXT / SSWWEB / PDF) ----------
 
 def get_text_from_file(uploaded_file) -> str:
     """
     Retorna o texto do arquivo enviado.
-    - Se for PDF: usa pdfplumber (texto digital).
-    - Se for .txt/.sswweb: faz decode normal.
+    - .pdf -> tenta ler com pdfplumber (PDF de texto)
+    - .sswweb / .txt -> decode normal
+
+    Se der erro ou o PDF não tiver texto, devolve string vazia
+    para o app tratar e mostrar mensagem amigável.
     """
     name = getattr(uploaded_file, "name", getattr(uploaded_file, "filename", ""))
     ext = os.path.splitext(name)[1].lower()
     data = uploaded_file.getvalue()
 
+    # PDF
     if ext == ".pdf":
         try:
+            import pdfplumber
+            pages_txt = []
             with pdfplumber.open(io.BytesIO(data)) as pdf:
-                pages_txt = []
                 for page in pdf.pages:
                     t = page.extract_text() or ""
-                    pages_txt.append(t)
+                    if t.strip():
+                        pages_txt.append(t)
+            if not pages_txt:
+                return ""
             return "\n".join(pages_txt)
         except Exception:
             return ""
-    else:
-        try:
-            return data.decode("latin-1", errors="ignore")
-        except Exception:
-            return data.decode("utf-8", errors="ignore")
+
+    # TEXTO (.sswweb / .txt)
+    try:
+        return data.decode("latin-1", errors="ignore")
+    except Exception:
+        return data.decode("utf-8", errors="ignore")
 
 
 # ==========================================================
@@ -707,8 +717,10 @@ uploaded_files = st.file_uploader(
 )
 
 if not uploaded_files:
-    st.info("⬆️ Arraste o(s) arquivo(s) de Demonstrativo aqui.")
-    st.info("Gere o arquivo na opção 076 em formato texto ou PDF com texto (não escaneado).")
+    st.info(
+        "Dica: no desktop, gere o Demonstrativo 076 em TEXTO (.sswweb / .txt).\n"
+        "No celular, o app suporta PDF **somente se for PDF de texto (não escaneado)**."
+    )
     st.stop()
 
 with st.spinner("Processando Demonstrativos..."):
@@ -716,7 +728,12 @@ with st.spinner("Processando Demonstrativos..."):
     df_romaneios = parse_romaneios_from_files(uploaded_files)
 
 if df_diario.empty or df_ctrc.empty:
-    st.error("Não foi possível extrair dados de CTRC / Diário. Verifique se o arquivo é o Demonstrativo completo e se o PDF não é escaneado (imagem).")
+    st.error(
+        "Não foi possível extrair dados de CTRC / Diário.\n\n"
+        "- Verifique se o arquivo é o **Demonstrativo completo** (relatório 076);\n"
+        "- Se estiver usando **PDF no celular**, ele precisa ser PDF de texto."
+        " Alguns celulares geram PDF como imagem e aí o sistema não consegue ler."
+    )
     st.stop()
 
 # ----------------------------------------------------------
@@ -918,7 +935,7 @@ if tem_clientes_rotas:
         df_cli['PCT_CUSTO'] = np.where(df_cli['FRETE'] > 0, df_cli['CUSTO'] / df_cli['FRETE'], 0.0)
         df_cli['CUSTO_KG'] = np.where(df_cli['PESO'] > 0, df_cli['CUSTO'] / df_cli['PESO'], 0.0)
 
-        # Garantir CNPJ na última coluna
+        # Garante CNPJ na última coluna
         cols_cli = [c for c in df_cli.columns if c != 'CLIENTE_CNPJ'] + ['CLIENTE_CNPJ']
         df_cli = df_cli[cols_cli]
 

@@ -7,6 +7,7 @@ import os
 import json
 import hashlib
 from datetime import datetime, date, timedelta
+import pdfplumber  # <<< NOVO: para ler PDFs de texto
 
 # ==========================================================
 # 0. CONFIG LICENÇA (POR EMPRESA, SEM TRIAL AUTOMÁTICO)
@@ -228,6 +229,35 @@ def format_percent_br(value, decimals=1):
         return ""
 
 
+# ---------- NOVO: leitura genérica de arquivo (TXT / SSWWEB / PDF) ----------
+
+def get_text_from_file(uploaded_file) -> str:
+    """
+    Retorna o texto do arquivo enviado.
+    - Se for PDF: usa pdfplumber (texto digital).
+    - Se for .txt/.sswweb: faz decode normal.
+    """
+    name = getattr(uploaded_file, "name", getattr(uploaded_file, "filename", ""))
+    ext = os.path.splitext(name)[1].lower()
+    data = uploaded_file.getvalue()
+
+    if ext == ".pdf":
+        try:
+            with pdfplumber.open(io.BytesIO(data)) as pdf:
+                pages_txt = []
+                for page in pdf.pages:
+                    t = page.extract_text() or ""
+                    pages_txt.append(t)
+            return "\n".join(pages_txt)
+        except Exception:
+            return ""
+    else:
+        try:
+            return data.decode("latin-1", errors="ignore")
+        except Exception:
+            return data.decode("utf-8", errors="ignore")
+
+
 # ==========================================================
 # 2. CABEÇALHO CTRC
 # ==========================================================
@@ -310,10 +340,9 @@ def parse_demonstrativo_files(uploaded_files):
         return pd.DataFrame(), pd.DataFrame()
 
     for f in uploaded_files:
-        try:
-            txt = f.getvalue().decode("latin-1", errors="ignore")
-        except Exception:
-            txt = f.getvalue().decode("utf-8", errors="ignore")
+        txt = get_text_from_file(f)
+        if not txt:
+            continue
 
         linhas = txt.splitlines()
         if not linhas:
@@ -552,10 +581,9 @@ def parse_romaneios_from_files(uploaded_files) -> pd.DataFrame:
     frames = []
 
     for f in uploaded_files:
-        try:
-            txt = f.getvalue().decode("latin-1", errors="ignore")
-        except Exception:
-            txt = f.getvalue().decode("utf-8", errors="ignore")
+        txt = get_text_from_file(f)
+        if not txt:
+            continue
 
         df_rom = parse_romaneios_pendentes(txt)
         if not df_rom.empty:
@@ -673,13 +701,14 @@ Para liberar **Custo por Cliente** e **Custo por Rota (SET)** para a empresa
                     st.error(msg)
 
 uploaded_files = st.file_uploader(
-    "Arquivos do Demonstrativo (.sswweb / .txt)",
-    accept_multiple_files=True
+    "Arquivos do Demonstrativo (.sswweb / .txt / .pdf)",
+    accept_multiple_files=True,
+    type=["sswweb", "txt", "pdf"]
 )
 
 if not uploaded_files:
     st.info("⬆️ Arraste o(s) arquivo(s) de Demonstrativo aqui.")
-    st.info("Gere o arquivo na opção 076 em formato R (relatório).")
+    st.info("Gere o arquivo na opção 076 em formato texto ou PDF com texto (não escaneado).")
     st.stop()
 
 with st.spinner("Processando Demonstrativos..."):
@@ -687,7 +716,7 @@ with st.spinner("Processando Demonstrativos..."):
     df_romaneios = parse_romaneios_from_files(uploaded_files)
 
 if df_diario.empty or df_ctrc.empty:
-    st.error("Não foi possível extrair dados de CTRC / Diário. Verifique se o arquivo é o Demonstrativo completo.")
+    st.error("Não foi possível extrair dados de CTRC / Diário. Verifique se o arquivo é o Demonstrativo completo e se o PDF não é escaneado (imagem).")
     st.stop()
 
 # ----------------------------------------------------------

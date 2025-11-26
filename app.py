@@ -190,6 +190,17 @@ def clean_cliente_nome(raw):
     return txt
 
 
+def extract_cnpj(raw):
+    """Extrai o primeiro CPF/CNPJ (11–14 dígitos) do texto."""
+    if raw is None:
+        return ""
+    txt = str(raw)
+    m = re.search(r'(\d{11,14})', txt)
+    if m:
+        return m.group(1)
+    return ""
+
+
 def format_number_br(value, decimals=2, prefix=""):
     """Formata número no padrão brasileiro: 172.500,00"""
     if value is None or (isinstance(value, float) and np.isnan(value)):
@@ -401,6 +412,7 @@ def parse_demonstrativo_files(uploaded_files):
 
             cliente_raw = remetente_raw if tipo_atual == 'C' else recebedor_raw
             cliente_nome = clean_cliente_nome(cliente_raw)
+            cliente_cnpj = extract_cnpj(cliente_raw)
 
             # Ignora linhas do próprio demonstrativo
             cliente_up = cliente_nome.strip().upper()
@@ -413,6 +425,7 @@ def parse_demonstrativo_files(uploaded_files):
                 'TIPO': 'COLETA' if tipo_atual == 'C' else 'ENTREGA',
                 'CTRC': ctrc_str,
                 'CLIENTE': cliente_nome,
+                'CLIENTE_CNPJ': cliente_cnpj,
                 'SET': set_str,
                 'CEP': cep_str,
                 'PESO_CALCULO': peso_val,
@@ -426,14 +439,11 @@ def parse_demonstrativo_files(uploaded_files):
     # ---------- LIMPEZA EXTRA: SET APENAS NUMÉRICO ----------
     def clean_set_value(s):
         s = str(s).strip().upper()
-        # se já é só dígito, mantém
         if re.fullmatch(r"\d+", s):
             return s
-        # se não tem nenhum dígito, zera
         m = re.search(r"\d+", s)
         if not m:
             return ""
-        # se tiver algum dígito perdido, pega só ele(s)
         return m.group(0)
 
     df_ctrc['SET'] = df_ctrc['SET'].apply(clean_set_value)
@@ -499,23 +509,19 @@ def parse_romaneios_pendentes(texto_relatorio: str) -> pd.DataFrame:
 
     for idx, linha in enumerate(linhas):
         if "PLACAS COM ROMANEIOS PENDENTES" in linha:
-            # pega o PERIODO: 01/11/25 A 25/11/25
             m = re.search(r"PERIODO:\s*(\d{2}/\d{2}/\d{2})\s*A\s*(\d{2}/\d{2}/\d{2})", linha)
             if m:
                 periodo = f"{m.group(1)} a {m.group(2)}"
 
-            # desce até o cabeçalho ("PLACA  ROMANEIO INCLUSAO MOTORISTA")
             j = idx + 1
             while j < len(linhas) and not linhas[j].strip().startswith("PLACA"):
                 j += 1
 
-            # pula cabeçalho + linha de traços
             if j < len(linhas) and linhas[j].strip().startswith("PLACA"):
                 j += 1
                 if j < len(linhas) and set(linhas[j].strip()) <= set("+-"):
                     j += 1
 
-            # lê as linhas de dados
             while j < len(linhas):
                 l = linhas[j]
                 if not l.strip():
@@ -523,7 +529,6 @@ def parse_romaneios_pendentes(texto_relatorio: str) -> pd.DataFrame:
                 if set(l.strip()) <= set("+-"):
                     break
 
-                # Ex.: "AZS5F77  13700-6 25/11/25 PAULO RODRIGO FERREIRA"
                 m2 = re.match(r"\s*(\S+)\s+(\S+)\s+(\d{2}/\d{2}/\d{2})\s+(.+?)\s*$", l)
                 if m2:
                     placa, romaneio, data_incl, motorista = m2.groups()
@@ -595,7 +600,7 @@ def gerar_excel(
             df_cli_col.to_excel(writer, index=False, sheet_name='Clientes_Coleta')
         if df_set is not None:
             df_set.to_excel(writer, index=False, sheet_name='Rotas_SET')
-        if df_rom is not None and not df_rom.empty:
+        if df_rom is not None:
             df_rom.to_excel(writer, index=False, sheet_name='Romaneios_Pendentes')
 
     return output.getvalue()
@@ -609,7 +614,6 @@ st.set_page_config(page_title="SSW Custos de Coleta / Entrega", page_icon="🚛"
 
 st.title("SSW Custos de Coleta / Entrega")
 
-# Nome da empresa OBRIGATÓRIO (controle de licença por empresa)
 empresa_input = st.text_input(
     "Nome da empresa / filial (obrigatório para controle de licença)",
     value=""
@@ -619,7 +623,6 @@ if not empresa_input:
     st.warning("Informe o nome da empresa/transportadora para continuar.")
     st.stop()
 
-# Estado da licença para ESTA empresa
 is_licensed, trial_active, trial_days_left, lic_msg = estado_licenca_empresa(empresa_input)
 
 if is_licensed:
@@ -627,7 +630,6 @@ if is_licensed:
 else:
     st.info(lic_msg)
 
-# Bloco de ativação (quando NÃO licenciado)
 if not is_licensed:
     with st.expander("🔑 Ativar licença completa para esta empresa"):
         st.markdown(
@@ -747,7 +749,7 @@ st.markdown("---")
 # TABS (Clientes/Rotas só se LICENCIADO) + Romaneios
 # ----------------------------------------------------------
 
-tem_clientes_rotas = is_licensed  # Clientes/Rotas só com licença
+tem_clientes_rotas = is_licensed
 
 if tem_clientes_rotas:
     tab_diario, tab_graficos, tab_clientes, tab_rotas, tab_rom = st.tabs(
@@ -878,7 +880,7 @@ if tem_clientes_rotas:
             0.0
         )
 
-        df_cli = df_tmp.groupby('CLIENTE', as_index=False).agg(
+        df_cli = df_tmp.groupby(['CLIENTE', 'CLIENTE_CNPJ'], as_index=False).agg(
             FRETE=('VLR_FRETE', 'sum'),
             CUSTO=('CUSTO_RATEADO', 'sum'),
             EVENTOS=('CTRC', 'nunique'),
@@ -886,6 +888,10 @@ if tem_clientes_rotas:
         )
         df_cli['PCT_CUSTO'] = np.where(df_cli['FRETE'] > 0, df_cli['CUSTO'] / df_cli['FRETE'], 0.0)
         df_cli['CUSTO_KG'] = np.where(df_cli['PESO'] > 0, df_cli['CUSTO'] / df_cli['PESO'], 0.0)
+
+        # Garantir CNPJ na última coluna
+        cols_cli = [c for c in df_cli.columns if c != 'CLIENTE_CNPJ'] + ['CLIENTE_CNPJ']
+        df_cli = df_cli[cols_cli]
 
         st.subheader("Visão Geral por Cliente")
         st.dataframe(

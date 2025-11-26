@@ -15,8 +15,11 @@ from datetime import datetime, date, timedelta
 LIC_SECRET = "HOMOLOGIX_SSW_DEMOSTRATIVO_2024"
 
 WHATSAPP_CONTATO = "(47) 99703-7512"          # <<< ALTERE AQUI
-EMAIL_CONTATO    = "ronaldo131ces@gmail.com"  # <<< ALTERE AQUI
-PIX_CHAVE        = "00020126580014br.gov.bcb.pix0136f0060f21-b941-469f-b6bc-61b7e83380285204000053039865802BR5914Ronaldo Cescon6009Sao Paulo62290525REC6925BEE3021F428700219563049BED"  # <<< ALTERE AQUI
+EMAIL_CONTATO = "ronaldo131ces@gmail.com"     # <<< ALTERE AQUI
+PIX_CHAVE = (
+    "00020126580014br.gov.bcb.pix0136f0060f21-b941-469f-b6bc-61b7e83380285204000053039865"
+    "802BR5914Ronaldo Cescon6009Sao Paulo62290525REC6925BEE3021F428700219563049BED"
+)  # <<< ALTERE AQUI
 
 LIC_FILE = "licenca_custos.json"
 
@@ -24,7 +27,7 @@ LIC_FILE = "licenca_custos.json"
 def gerar_chave_licenca(nome_empresa: str, data_validade: str) -> str:
     """
     Gera uma chave de licença a partir do nome da empresa e data de validade (YYYYMMDD).
-    Use essa função em um script separado (gerar_licenca.py) para gerar chaves trial ou definitivas.
+    Use essa função em um script separado para gerar chaves trial ou definitivas.
     """
     base = f"{nome_empresa.strip().upper()}|{data_validade}|{LIC_SECRET}"
     digest = hashlib.sha256(base.encode("utf-8")).hexdigest().upper()
@@ -108,7 +111,6 @@ def estado_licenca_empresa(nome_empresa_exibicao: str):
         return False, False, 0, "Informe o nome da empresa."
 
     key = nome_empresa_exibicao.strip().upper()
-
     lic_all = carregar_licencas_all()
     info = lic_all.get(key)
 
@@ -187,8 +189,6 @@ def clean_cliente_nome(raw):
         return m.group(1).strip()
     return txt
 
-
-# ======= FORMATAÇÃO BR (pt-BR) ============================
 
 def format_number_br(value, decimals=2, prefix=""):
     """Formata número no padrão brasileiro: 172.500,00"""
@@ -288,7 +288,7 @@ def slice_col(line, col_bounds, col_name):
 
 
 # ==========================================================
-# 3. PARSE DEMONSTRATIVO
+# 3. PARSE DEMONSTRATIVO (CTRC + DIÁRIO)
 # ==========================================================
 
 def parse_demonstrativo_files(uploaded_files):
@@ -423,6 +423,22 @@ def parse_demonstrativo_files(uploaded_files):
     if df_ctrc.empty:
         return pd.DataFrame(), pd.DataFrame()
 
+    # ---------- LIMPEZA EXTRA: SET APENAS NUMÉRICO ----------
+    def clean_set_value(s):
+        s = str(s).strip().upper()
+        # se já é só dígito, mantém
+        if re.fullmatch(r"\d+", s):
+            return s
+        # se não tem nenhum dígito, zera
+        m = re.search(r"\d+", s)
+        if not m:
+            return ""
+        # se tiver algum dígito perdido, pega só ele(s)
+        return m.group(0)
+
+    df_ctrc['SET'] = df_ctrc['SET'].apply(clean_set_value)
+    # --------------------------------------------------------
+
     df_ctrc.drop_duplicates(subset=['PLACA', 'DATA', 'CTRC'], inplace=True)
     df_ctrc['DATA'] = pd.to_datetime(df_ctrc['DATA'])
 
@@ -467,14 +483,110 @@ def parse_demonstrativo_files(uploaded_files):
 
 
 # ==========================================================
-# 4. EXCEL
+# 4. PARSE ROMANEIOS PENDENTES (ULTIMA PÁGINA)
 # ==========================================================
 
-def gerar_excel(df_diario, df_ctrc, df_cli=None, df_set=None, df_cli_ent=None, df_cli_col=None):
+def parse_romaneios_pendentes(texto_relatorio: str) -> pd.DataFrame:
+    """
+    Lê do DEMONSTRATIVO (ssw0216) o bloco:
+    'PERIODO: ... - PLACAS COM ROMANEIOS PENDENTES'
+    e devolve uma tabela com:
+        PLACA, ROMANEIO, DATA_INCLUSAO, MOTORISTA, PERIODO_RELATORIO
+    """
+    linhas = texto_relatorio.splitlines()
+    resultado = []
+    periodo = None
+
+    for idx, linha in enumerate(linhas):
+        if "PLACAS COM ROMANEIOS PENDENTES" in linha:
+            # pega o PERIODO: 01/11/25 A 25/11/25
+            m = re.search(r"PERIODO:\s*(\d{2}/\d{2}/\d{2})\s*A\s*(\d{2}/\d{2}/\d{2})", linha)
+            if m:
+                periodo = f"{m.group(1)} a {m.group(2)}"
+
+            # desce até o cabeçalho ("PLACA  ROMANEIO INCLUSAO MOTORISTA")
+            j = idx + 1
+            while j < len(linhas) and not linhas[j].strip().startswith("PLACA"):
+                j += 1
+
+            # pula cabeçalho + linha de traços
+            if j < len(linhas) and linhas[j].strip().startswith("PLACA"):
+                j += 1
+                if j < len(linhas) and set(linhas[j].strip()) <= set("+-"):
+                    j += 1
+
+            # lê as linhas de dados
+            while j < len(linhas):
+                l = linhas[j]
+                if not l.strip():
+                    break
+                if set(l.strip()) <= set("+-"):
+                    break
+
+                # Ex.: "AZS5F77  13700-6 25/11/25 PAULO RODRIGO FERREIRA"
+                m2 = re.match(r"\s*(\S+)\s+(\S+)\s+(\d{2}/\d{2}/\d{2})\s+(.+?)\s*$", l)
+                if m2:
+                    placa, romaneio, data_incl, motorista = m2.groups()
+                    resultado.append({
+                        "PLACA": placa,
+                        "ROMANEIO": romaneio,
+                        "DATA_INCLUSAO": data_incl,
+                        "MOTORISTA": motorista,
+                        "PERIODO_RELATORIO": periodo,
+                    })
+                j += 1
+            break
+
+    if not resultado:
+        return pd.DataFrame(columns=["PLACA", "ROMANEIO", "DATA_INCLUSAO", "MOTORISTA", "PERIODO_RELATORIO"])
+
+    return pd.DataFrame(resultado)
+
+
+def parse_romaneios_from_files(uploaded_files) -> pd.DataFrame:
+    frames = []
+
+    for f in uploaded_files:
+        try:
+            txt = f.getvalue().decode("latin-1", errors="ignore")
+        except Exception:
+            txt = f.getvalue().decode("utf-8", errors="ignore")
+
+        df_rom = parse_romaneios_pendentes(txt)
+        if not df_rom.empty:
+            nome_arq = getattr(f, "name", getattr(f, "filename", ""))
+            df_rom["ARQUIVO"] = nome_arq
+            frames.append(df_rom)
+
+    if frames:
+        df = pd.concat(frames, ignore_index=True)
+        df.drop_duplicates(
+            subset=["PLACA", "ROMANEIO", "DATA_INCLUSAO", "MOTORISTA", "ARQUIVO"],
+            inplace=True
+        )
+        return df
+
+    return pd.DataFrame(columns=["PLACA", "ROMANEIO", "DATA_INCLUSAO", "MOTORISTA", "PERIODO_RELATORIO", "ARQUIVO"])
+
+
+# ==========================================================
+# 5. EXCEL
+# ==========================================================
+
+def gerar_excel(
+    df_diario,
+    df_ctrc,
+    df_cli=None,
+    df_set=None,
+    df_cli_ent=None,
+    df_cli_col=None,
+    df_rom=None,
+):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df_diario.to_excel(writer, index=False, sheet_name='Diario_Placa')
         df_ctrc.to_excel(writer, index=False, sheet_name='CTRCs')
+
         if df_cli is not None:
             df_cli.to_excel(writer, index=False, sheet_name='Clientes_Geral')
         if df_cli_ent is not None:
@@ -483,11 +595,14 @@ def gerar_excel(df_diario, df_ctrc, df_cli=None, df_set=None, df_cli_ent=None, d
             df_cli_col.to_excel(writer, index=False, sheet_name='Clientes_Coleta')
         if df_set is not None:
             df_set.to_excel(writer, index=False, sheet_name='Rotas_SET')
+        if df_rom is not None and not df_rom.empty:
+            df_rom.to_excel(writer, index=False, sheet_name='Romaneios_Pendentes')
+
     return output.getvalue()
 
 
 # ==========================================================
-# 5. INTERFACE STREAMLIT
+# 6. INTERFACE STREAMLIT
 # ==========================================================
 
 st.set_page_config(page_title="SSW Custos de Coleta / Entrega", page_icon="🚛", layout="wide")
@@ -567,6 +682,7 @@ if not uploaded_files:
 
 with st.spinner("Processando Demonstrativos..."):
     df_diario, df_ctrc = parse_demonstrativo_files(uploaded_files)
+    df_romaneios = parse_romaneios_from_files(uploaded_files)
 
 if df_diario.empty or df_ctrc.empty:
     st.error("Não foi possível extrair dados de CTRC / Diário. Verifique se o arquivo é o Demonstrativo completo.")
@@ -628,19 +744,22 @@ c8.metric("Custo / Entrega", format_number_br(custo_entrega_global, 2, "R$ "))
 st.markdown("---")
 
 # ----------------------------------------------------------
-# TABS (Clientes/Rotas só se LICENCIADO)
+# TABS (Clientes/Rotas só se LICENCIADO) + Romaneios
 # ----------------------------------------------------------
 
-tab_labels = ["📘 Diário por Placa", "📊 Gráficos"]
-tem_clientes_rotas = is_licensed   # << só com licença agora
+tem_clientes_rotas = is_licensed  # Clientes/Rotas só com licença
 
 if tem_clientes_rotas:
-    tab_labels += ["💼 Clientes (Custo / Cliente)", "🧭 Rotas (Custo / SET)"]
+    tab_diario, tab_graficos, tab_clientes, tab_rotas, tab_rom = st.tabs(
+        ["📘 Diário por Placa", "📊 Gráficos", "💼 Clientes (Custo / Cliente)", "🧭 Rotas (Custo / SET)", "📄 Romaneios Pendentes"]
+    )
+else:
+    tab_diario, tab_graficos, tab_rom = st.tabs(
+        ["📘 Diário por Placa", "📊 Gráficos", "📄 Romaneios Pendentes"]
+    )
 
-tabs = st.tabs(tab_labels)
-
-# TAB 1 ----------------------------------------------------
-with tabs[0]:
+# TAB DIÁRIO ------------------------------------------------
+with tab_diario:
     df_dia_view = df_diario_f.copy()
     df_dia_view['DATA'] = df_dia_view['DATA'].dt.strftime('%d/%m/%Y')
 
@@ -681,8 +800,8 @@ with tabs[0]:
 
     st.dataframe(styled, use_container_width=True, height=450)
 
-# TAB 2 ----------------------------------------------------
-with tabs[1]:
+# TAB GRÁFICOS ---------------------------------------------
+with tab_graficos:
     import plotly.express as px
     import plotly.graph_objects as go
 
@@ -736,13 +855,16 @@ with tabs[1]:
     fig3.update_layout(title="Percentual de Custo por Dia", yaxis_tickformat='.0%')
     st.plotly_chart(fig3, use_container_width=True)
 
-# TABS 3 e 4 só se LICENCIADO -----------------------------
+# ----------------------------------------------------------
+# TABS CLIENTES / ROTAS (SÓ SE LICENCIADO)
+# ----------------------------------------------------------
+
 df_cli = df_set = df_cli_ent = df_cli_col = None
 df_tmp = None
 
 if tem_clientes_rotas:
-    # TAB 3 - Clientes
-    with tabs[2]:
+    # TAB CLIENTES -----------------------------------------
+    with tab_clientes:
         df_tmp = df_ctrc_f.copy()
         df_tmp['DATA'] = pd.to_datetime(df_tmp['DATA'])
         df_tmp['FRETE_DIA'] = df_tmp.groupby(['PLACA', 'DATA'])['VLR_FRETE'].transform('sum')
@@ -825,8 +947,8 @@ if tem_clientes_rotas:
             height=350
         )
 
-    # TAB 4 - Rotas (SET)
-    with tabs[3]:
+    # TAB ROTAS (SET) --------------------------------------
+    with tab_rotas:
         if df_tmp is None:
             df_tmp = df_ctrc_f.copy()
             df_tmp['DATA'] = pd.to_datetime(df_tmp['DATA'])
@@ -861,11 +983,19 @@ if tem_clientes_rotas:
             height=450
         )
 
+# TAB ROMANEIOS PENDENTES ----------------------------------
+with tab_rom:
+    st.subheader("Placas com Romaneios Pendentes (última página do Demonstrativo)")
+    if df_romaneios.empty:
+        st.info("Nenhuma placa com romaneio pendente encontrada nos arquivos enviados.")
+    else:
+        df_rom_view = df_romaneios.copy()
+        st.dataframe(df_rom_view, use_container_width=True, height=350)
+
 # ----------------------------------------------------------
 # DOWNLOAD EXCEL
 # ----------------------------------------------------------
 
-# No DEMO: só Diário + CTRCs
 if is_licensed:
     excel_bytes = gerar_excel(
         df_diario_f,
@@ -873,7 +1003,8 @@ if is_licensed:
         df_cli=df_cli,
         df_set=df_set,
         df_cli_ent=df_cli_ent,
-        df_cli_col=df_cli_col
+        df_cli_col=df_cli_col,
+        df_rom=df_romaneios
     )
     nome_arq = "Analise_SSW_Demonstrativo.xlsx"
 else:
@@ -883,7 +1014,8 @@ else:
         df_cli=None,
         df_set=None,
         df_cli_ent=None,
-        df_cli_col=None
+        df_cli_col=None,
+        df_rom=df_romaneios
     )
     nome_arq = "Analise_SSW_Demonstrativo_demo.xlsx"
 
